@@ -1,0 +1,52 @@
+#!/bin/bash
+
+HOSTNAME=${HOSTNAME-openshift-sandbox}
+PROMETHEUS_URL=${PROMETHEUS_URL-https://prometheus-k8s-openshift-monitoring.apps.openshift-sandbox.catalysts.digital}
+ALERTS_WARNING=${ALERTS_WARNING-"ALERTS{severity=\"warning\",alertstate=\"firing\"}"}
+ALERTS_CRITICAL=${ALERTS_CRITICAL-"ALERTS{severity=\"critical\",alertstate=\"firing\"}"}
+
+PROM_PASSWORD=${PROM_PASSWORD-foobar}
+PROM_USER=${PROM_USER-internal}
+
+function submit() {
+  local SERVICE=$1
+  local RETURN_CODE=$2
+  local MESSAGE=$3
+
+  #echo /etc/nagios/submit_check.sh "$HOSTNAME" "$SERVICE" "$RETURN_CODE" "$IDLE|CPU_idle_time=$IDLE;30;20"
+  echo /etc/nagios/submit_check.sh "$SERVICE" "$RETURN_CODE" "$MESSAGE"
+}
+
+function query() {
+    curl -s "$PROMETHEUS_URL/api/v1/query" --data-urlencode "query=$1" \
+        --user "$PROM_USER:$PROM_PASSWORD" \
+        -H 'Accept: application/json, text/javascript, */*; q=0.01' \
+        --compressed | jq -r '.data.result[] | .metric | .alertname'
+}
+
+function submitOpenShiftAlerts() {
+
+    local WARNINGS=$(query "$ALERTS_WARNING")
+    local CRITICALS=$(query "$ALERTS_CRITICAL")
+
+    local CODE=OK
+    if [[ "$CRITICALS" != "" ]]; then
+        CODE=CRITICAL
+    elif [[ "$WARNINGS" != "" ]]; then
+        CODE=WARNING
+    fi
+
+    local WCOUNT=$(echo "$WARNINGS" | wc -w)
+    local CCOUNT=$(echo "$CRITICALS" | wc -w)
+
+    local COUNT=$((WCOUNT + CCOUNT))
+    local ALERT_NAMES=$(echo -n $WARNINGS $CRITICALS | tr '\n ' ',')
+
+    submit "OpenShiftAlerts" "$CODE" "$COUNT|OpenShift_Alerts=$COUNT|OpenShift_Warnings=$WCOUNT|OpenShift_Criticals=$CCOUNT|OpenShift_AlertNames=$ALERT_NAMES|$PROMETHEUS_URL"
+}
+
+while true; do
+    submitOpenShiftAlerts
+    sleep 60
+done
+
